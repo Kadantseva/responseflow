@@ -30,10 +30,18 @@ class VseLlmProvider(LlmProvider):
         )
 
     def complete(self, request: LlmRequest) -> LlmCallResult:
+        import time
+
+        started = time.monotonic()
+        print(f"[LLM] Начинаю запрос к {self._model}", flush=True)
+
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
-                messages=[item.model_dump() for item in request.messages],
+                messages=[
+                    item.model_dump()
+                    for item in request.messages
+                ],
                 tools=[{
                     "type": "function",
                     "function": {
@@ -48,21 +56,49 @@ class VseLlmProvider(LlmProvider):
                 },
                 max_tokens=request.max_output_tokens,
             )
+
+            print(
+                f"[LLM] Ответ получен за "
+                f"{time.monotonic() - started:.1f} сек.",
+                flush=True,
+            )
+
         except (
             APIConnectionError,
             APITimeoutError,
             InternalServerError,
             RateLimitError,
         ) as error:
-            raise TemporaryLlmError("Временная ошибка вызова LLM") from error
-
+            print(
+                f"[LLM] Ошибка через "
+                f"{time.monotonic() - started:.1f} сек.: "
+                f"{type(error).__name__}: {error}",
+                flush=True,
+            )
+            raise TemporaryLlmError(
+                "Временная ошибка вызова LLM"
+            ) from error
+        
         message = response.choices[0].message
+
         if not message.tool_calls:
-            raise InvalidLlmResponseError("Модель не вызвала обязательную функцию")
+            raise InvalidLlmResponseError(
+                "Модель не вызвала обязательную функцию: "
+                f"model={response.model!r}, "
+                f"content={message.content!r}, "
+                f"refusal={message.refusal!r}, "
+                f"request_id={response._request_id!r}"
+            )
+
         call = message.tool_calls[0]
+
         if call.function.name != request.tool_name:
-            raise InvalidLlmResponseError("Модель вызвала неизвестную функцию")
+            raise InvalidLlmResponseError(
+                "Модель вызвала неизвестную функцию"
+            )
+
         usage = response.usage
+
         return LlmCallResult(
             provider="vsellm",
             model=self._model,

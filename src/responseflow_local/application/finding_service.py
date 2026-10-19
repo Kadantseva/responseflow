@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 import traceback
 
 from .key_builder import build_deduplication_key
-from responseflow_local.detectors.unanswered import FindingCandidate
+from responseflow_local.domain.findings import FindingCandidate
 # from responseflow_local.domain.models import Finding, FindingEvent, FindingStatus
 from responseflow_local.storage.models import Evidence,Finding, FindingEvent, FindingStatus
 from responseflow_local.storage.repositories import FindingRepository

@@ -1,9 +1,12 @@
+
 from collections.abc import Iterable
 
 from pydantic import ValidationError
 
 from responseflow_local.domain.models import MessageRevision
-from responseflow_local.storage.sqlite_message_repository import SqliteMessageRepository
+from responseflow_local.storage.sqlite_message_repository import (
+    SqliteMessageRepository,
+)
 
 
 class MessageImportError(ValueError):
@@ -21,7 +24,7 @@ class MessageImportService:
         self,
         messages: Iterable[MessageRevision],
     ) -> int:
-        imported = 0
+        validated_messages: list[MessageRevision] = []
 
         for message in messages:
             try:
@@ -33,16 +36,17 @@ class MessageImportService:
                     "Сообщение не прошло валидацию"
                 ) from error
 
-            self._repository.add(validated)
-            imported += 1
+            validated_messages.append(validated)
 
-        return imported
+        return self._repository.save_messages(
+            tuple(validated_messages)
+        )
 
     def import_records(
         self,
         records: Iterable[dict],
     ) -> int:
-        imported = 0
+        messages: list[MessageRevision] = []
 
         for record in records:
             try:
@@ -52,7 +56,6 @@ class MessageImportService:
                     "Импортируемая запись не соответствует MessageRevision"
                 ) from error
 
-            self._repository.add(message)
-            imported += 1
+            messages.append(message)
 
-        return imported
+        return self._repository.save_messages(tuple(messages))

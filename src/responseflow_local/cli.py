@@ -2,24 +2,32 @@
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
+import json
 
 import typer
 
-from .container import ApplicationContainer, build_application
-from .application.review import (
+from responseflow_local.container import (
+    ApplicationContainer,
+    build_application,
+)
+from responseflow_local.application.review import (
     AcknowledgeRequest,
     RejectRequest,
     ResolveRequest,
     SnoozeRequest,
 )
 
-app = typer.Typer(help="ResponseFlow Local — анализ клиентских переписок")
+app = typer.Typer(
+    help="ResponseFlow Local — анализ клиентских переписок",
+    no_args_is_help=True,
+)
 
 
 def container(
     database: Path,
     fixture_root: Path = Path("data/fixtures"),
 ) -> ApplicationContainer:
+    """Создать контейнер приложения."""
     return build_application(database, fixture_root)
 
 
@@ -32,8 +40,8 @@ def init_db(
         help="Путь к SQLite-базе",
     ),
 ) -> None:
-    """Создать базу данных или безопасно обновить её схему."""
-    application = container(database)
+    """Создать базу данных или обновить её схему."""
+    container(database)
     typer.echo(f"База данных инициализирована: {database}")
 
 
@@ -51,6 +59,7 @@ def import_messages(
         Path("data/responseflow.db"),
         "--database",
         "-d",
+        help="Путь к SQLite-базе",
     ),
     fixtures: Path = typer.Option(
         Path("data/fixtures"),
@@ -59,25 +68,42 @@ def import_messages(
     ),
 ) -> None:
     """Импортировать сообщения из JSONL."""
-    if not file.is_file():
-        raise typer.BadParameter(f"Файл не найден: {file}")
-
     application = container(database, fixtures)
-    report = application.import_service.import_file(file)
+
+    records = []
+    try:
+        with file.open("r", encoding="utf-8") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError as error:
+                    raise typer.BadParameter(
+                        f"Некорректный JSON в строке {line_number}: {error}"
+                    ) from error
+
+        imported = application.import_service.import_records(records)
+
+    except (ValueError, OSError) as error:
+        typer.echo(f"Ошибка импорта: {error}", err=True)
+        raise typer.Exit(code=1) from error
 
     typer.echo(f"Источник сообщений: {file}")
-
-    if hasattr(report, "model_dump_json"):
-        typer.echo(report.model_dump_json(indent=2))
-    else:
-        typer.echo(str(report))
+    typer.echo(f"Импортировано сообщений: {imported}")
 
 
 
 @app.command("analyze")
 def analyze(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
-    analysis_time: datetime = typer.Option(
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        "-w",
+        help="Идентификатор рабочей области",
+    ),
+    analysis_time: str = typer.Option(
         ...,
         "--analysis-time",
         help="Время анализа в ISO 8601 с часовым поясом",
@@ -86,15 +112,27 @@ def analyze(
         Path("data/responseflow.db"),
         "--database",
         "-d",
+        help="Путь к SQLite-базе",
     ),
 ) -> None:
     """Запустить анализ переписок."""
+    try:
+        analysis_time = datetime.fromisoformat(
+            analysis_time.replace("Z", "+00:00")
+        )
+    except ValueError as error:
+        raise typer.BadParameter(
+            "Используйте ISO 8601, например "
+            "2026-10-17T12:00:00+00:00"
+        ) from error
+
     if analysis_time.tzinfo is None or analysis_time.utcoffset() is None:
         raise typer.BadParameter(
-            "Укажите часовой пояс, например 2026-10-17T12:00:00+03:00"
+            "Укажите часовой пояс, например 2026-10-17T12:00:00+00:00"
         )
 
-    report = container(database).analysis_service.run(
+    application = container(database)
+    report = application.analysis_service.run(
         workspace,
         analysis_time,
     )
@@ -103,10 +141,23 @@ def analyze(
 
 @app.command("list-findings")
 def list_findings(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
-    status: str | None = typer.Option(None, "--status"),
-    priority: str | None = typer.Option(None, "--priority"),
-    project_id: str | None = typer.Option(None, "--project"),
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        "-w",
+    ),
+    status: str | None = typer.Option(
+        None,
+        "--status",
+    ),
+    priority: str | None = typer.Option(
+        None,
+        "--priority",
+    ),
+    project_id: str | None = typer.Option(
+        None,
+        "--project",
+    ),
     database: Path = typer.Option(
         Path("data/responseflow.db"),
         "--database",
@@ -114,7 +165,9 @@ def list_findings(
     ),
 ) -> None:
     """Вывести карточки для рабочей области."""
-    findings = container(database).inbox_service.list_findings(
+    application = container(database)
+
+    findings = application.inbox_service.list_findings(
         workspace,
         status=status,
         priority=priority,
@@ -123,8 +176,10 @@ def list_findings(
 
     for finding in findings:
         typer.echo(
-            f"{finding.finding_id} | {finding.status} | "
-            f"{finding.type} | {finding.summary} | "
+            f"{finding.finding_id} | "
+            f"{finding.status} | "
+            f"{finding.type} | "
+            f"{finding.summary} | "
             f"версия={finding.version}"
         )
 
@@ -133,8 +188,15 @@ def list_findings(
 
 @app.command("show-finding")
 def show_finding(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
-    finding_id: UUID = typer.Argument(...),
+    finding_id: UUID = typer.Argument(
+        ...,
+        help="UUID карточки",
+    ),
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        "-w",
+    ),
     database: Path = typer.Option(
         Path("data/responseflow.db"),
         "--database",
@@ -142,30 +204,39 @@ def show_finding(
     ),
 ) -> None:
     """Показать карточку, основания и историю решений."""
-    service = container(database).inbox_service
+    application = container(database)
+    service = application.inbox_service
+
     finding = service.get_finding(workspace, finding_id)
     evidence = service._repository.list_evidence(finding_id)
     history = service.get_history(workspace, finding_id)
 
     typer.echo(finding.model_dump_json(indent=2))
+
     typer.echo("\nОснования:")
     for item in evidence:
-        typer.echo(f"- {item.message_external_id} ({item.added_at})")
+        typer.echo(
+            f"- {item.message_external_id} ({item.added_at})"
+        )
 
     typer.echo("\nИстория решений:")
     for event in history:
         typer.echo(
-            f"- {event.occurred_at} | {event.event_type} | {event.details}"
+            f"- {event.occurred_at} | "
+            f"{event.event_type} | {event.details}"
         )
 
 
 @app.command("acknowledge")
 def acknowledge(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
     finding_id: UUID = typer.Argument(...),
+    workspace: str = typer.Option(..., "--workspace", "-w"),
     author: str = typer.Option(..., "--author"),
     version: int = typer.Option(..., "--version", min=1),
-    comment: str = typer.Option("Принято в работу", "--comment"),
+    comment: str = typer.Option(
+        "Принято в работу",
+        "--comment",
+    ),
     database: Path = typer.Option(
         Path("data/responseflow.db"),
         "--database",
@@ -179,19 +250,22 @@ def acknowledge(
         occurred_at=datetime.now(timezone.utc),
         comment=comment,
     )
+
     result = container(database).inbox_service.acknowledge(
-        workspace, finding_id, command
+        workspace,
+        finding_id,
+        command,
     )
     typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command("snooze")
 def snooze(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
     finding_id: UUID = typer.Argument(...),
+    workspace: str = typer.Option(..., "--workspace", "-w"),
     author: str = typer.Option(..., "--author"),
     version: int = typer.Option(..., "--version", min=1),
-    until: datetime = typer.Option(
+    until: str = typer.Option(
         ...,
         "--until",
         help="Дата окончания snooze в ISO 8601 с часовым поясом",
@@ -204,8 +278,18 @@ def snooze(
     ),
 ) -> None:
     """Отложить карточку до указанного времени."""
+    try:
+        until = datetime.fromisoformat(until.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise typer.BadParameter(
+            "Укажите дату в формате ISO 8601, "
+            "например 2026-10-20T10:00:00+03:00"
+        ) from error
+
     if until.tzinfo is None or until.utcoffset() is None:
-        raise typer.BadParameter("Укажите часовой пояс в --until")
+        raise typer.BadParameter(
+            "Укажите часовой пояс в --until, например +03:00"
+        )
 
     command = SnoozeRequest(
         author=author,
@@ -214,16 +298,19 @@ def snooze(
         until=until,
         reason=reason,
     )
+
     result = container(database).inbox_service.snooze(
-        workspace, finding_id, command
+        workspace,
+        finding_id,
+        command,
     )
     typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command("resolve")
 def resolve(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
     finding_id: UUID = typer.Argument(...),
+    workspace: str = typer.Option(..., "--workspace", "-w"),
     author: str = typer.Option(..., "--author"),
     version: int = typer.Option(..., "--version", min=1),
     comment: str = typer.Option(..., "--comment"),
@@ -240,16 +327,19 @@ def resolve(
         occurred_at=datetime.now(timezone.utc),
         comment=comment,
     )
+
     result = container(database).inbox_service.resolve(
-        workspace, finding_id, command
+        workspace,
+        finding_id,
+        command,
     )
     typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command("reject")
 def reject(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
     finding_id: UUID = typer.Argument(...),
+    workspace: str = typer.Option(..., "--workspace", "-w"),
     author: str = typer.Option(..., "--author"),
     version: int = typer.Option(..., "--version", min=1),
     reason_code: str = typer.Option(
@@ -276,18 +366,24 @@ def reject(
             reason_code=reason_code,
             comment=comment,
         )
-    except Exception as error:
+    except (ValueError, TypeError) as error:
         raise typer.BadParameter(str(error)) from error
 
     result = container(database).inbox_service.reject(
-        workspace, finding_id, command
+        workspace,
+        finding_id,
+        command,
     )
     typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command("report")
 def report(
-    workspace: str = typer.Option(..., "--workspace", "-w"),
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        "-w",
+    ),
     database: Path = typer.Option(
         Path("data/responseflow.db"),
         "--database",

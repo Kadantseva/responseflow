@@ -2,8 +2,8 @@ from datetime import datetime
 
 from responseflow_local.detectors.business_time import add_working_minutes, working_minutes_between
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from typing import Literal
 from .question_rules import is_customer_request
+from responseflow_local.domain.findings import FindingCandidate
 
 
 class MessageView(BaseModel):
@@ -15,43 +15,12 @@ class MessageView(BaseModel):
     sent_at: AwareDatetime
     text: str
 
-class ConversationWindow(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    workspace_id: str
-    conversation_id: str
-    project_id: str
-    analysis_time: AwareDatetime
-    messages: tuple[MessageView, ...]
-
-
 class DetectionContext(BaseModel):
     workspace_id: str
     conversation_id: str
     response_sla_minutes: int = Field(gt=0)
     analysis_time: AwareDatetime
     messages: tuple[MessageView, ...]
-
-
-class FindingCandidate(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    workspace_id: str
-    conversation_id: str
-    project_id: str
-
-    type: Literal["unanswered"] = "unanswered"
-    confidence: float = Field(ge=0.0, le=1.0)
-
-    subject_key: str
-    summary: str
-    recommended_action: str
-
-    evidence_message_ids: tuple[str, ...]
-
-    detected_at: AwareDatetime
-    due_at: AwareDatetime
-
-    waiting_minutes: int = Field(ge=0)
 
 
 REQUEST_PREFIXES = (

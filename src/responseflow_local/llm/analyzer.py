@@ -28,8 +28,12 @@ class LlmSituationAnalyzer:
             window, project_context, self._system_prompt_path,
             self._max_output_tokens,
         )
+
         call = self._provider.complete(request)
+
         payload = parse_payload(call)
+        print('---')
+        print(call)
         if len(payload.situations) > self._max_situations:
             raise ValueError("LLM вернула слишком много ситуаций")
         available = {message.external_id for message in window.messages}
